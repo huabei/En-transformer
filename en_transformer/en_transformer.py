@@ -134,7 +134,7 @@ class FeedForward(nn.Module):
         )
 
     def forward(self, feats, coors):
-        return self.net(feats), 0
+        return self.net(feats), 0 # no coors update for equivariant
 
 class EquivariantAttention(nn.Module):
     def __init__(
@@ -201,7 +201,7 @@ class EquivariantAttention(nn.Module):
             self.to_output_gates = nn.Sequential(
                 gate_linear,
                 nn.Sigmoid(),
-                Rearrange('b n (l h) -> l b h n 1', h = heads)
+                Rearrange('b n (l h) -> l b h n 1', h = heads) # l auto cal, here is 2
             )
 
         self.talking_heads = nn.Conv2d(heads, heads, 1, bias = False) if talking_heads else None
@@ -284,7 +284,7 @@ class EquivariantAttention(nn.Module):
         feats,
         coors,
         edges = None,
-        mask = None,
+        mask = None, # is used for batch molecule
         adj_mat = None
     ):
         b, n, d, h, num_nn, only_sparse_neighbors, valid_neighbor_radius, device = *feats.shape, self.heads, self.neighbors, self.only_sparse_neighbors, self.valid_neighbor_radius, feats.device
@@ -297,8 +297,8 @@ class EquivariantAttention(nn.Module):
         if exists(mask):
             num_nodes = mask.sum(dim = -1)
 
-        rel_coors = rearrange(coors, 'b i d -> b i 1 d') - rearrange(coors, 'b j d -> b 1 j d')
-        rel_dist = rel_coors.norm(p = 2, dim = -1)
+        rel_coors = rearrange(coors, 'b i d -> b i 1 d') - rearrange(coors, 'b j d -> b 1 j d') # relative coordinates
+        rel_dist = rel_coors.norm(p = 2, dim = -1) # relative distance
 
         # calculate neighborhood indices
 
@@ -333,8 +333,8 @@ class EquivariantAttention(nn.Module):
 
         # derive queries keys and values
 
-        q, k, v = self.to_qkv(feats).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
+        q, k, v = self.to_qkv(feats).chunk(3, dim = -1) # cal q k v
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v)) # move head ahead
 
         # to give network ability to attend to nothing
 
@@ -352,7 +352,7 @@ class EquivariantAttention(nn.Module):
             rel_dist  = get_at('b i [j], b i k -> b i k', rel_dist, nbhd_indices)
             rel_coors = get_at('b i [j] c, b i k -> b i k c', rel_coors, nbhd_indices)
         else:
-            k = repeat(k, 'b h j d -> b h n j d', n = n)
+            k = repeat(k, 'b h j d -> b h n j d', n = n) # sequence length
             v = repeat(v, 'b h j d -> b h n j d', n = n)
 
         # prepare mask
@@ -363,7 +363,7 @@ class EquivariantAttention(nn.Module):
             if exists(nbhd_indices):
                 k_mask = get_at('b [j], b i k -> b 1 i k', mask, nbhd_indices)
 
-            mask = q_mask * k_mask
+            mask = q_mask * k_mask # k_mask may be not defined
 
             if exists(nbhd_masks):
                 mask &= rearrange(nbhd_masks, 'b i j -> b 1 i j')
@@ -375,7 +375,7 @@ class EquivariantAttention(nn.Module):
 
         if self.rel_pos_emb:
             seq = torch.arange(n, device = device, dtype = q.dtype)
-            seq_target_pos = nbhd_indices if exists(nbhd_indices) else rearrange(seq, 'j -> 1 1 j')
+            seq_target_pos = nbhd_indices if exists(nbhd_indices) else repeat(seq, 'j -> b 1 j', b = b)
             seq_rel_dist = rearrange(seq, 'i -> 1 i 1') - seq_target_pos
             seq_rel_dist = repeat(seq_rel_dist, 'b i j -> b 1 i j 1', b = b)
             rel_dist = torch.cat((rel_dist, seq_rel_dist), dim = -1)
@@ -426,7 +426,7 @@ class EquivariantAttention(nn.Module):
         rel_coors_sign = self.coors_gate(coors_mlp_input)
         rel_coors_sign = rearrange(rel_coors_sign, 'b i j h -> b i j 1 h')
 
-        if self.use_cross_product:
+        if self.use_cross_product: # vector rel direction info
             rel_coors_i = repeat(rel_coors, 'b n i c -> b n (i j) c', j = j)
             rel_coors_j = repeat(rel_coors, 'b n j c -> b n (i j) c', i = j)
 
@@ -610,12 +610,12 @@ class EnTransformer(nn.Module):
         return_coor_changes = False,
         **kwargs
     ):
-        b = feats.shape[0]
+        b = feats.shape[0] # batch size
 
-        if exists(self.token_emb):
+        if exists(self.token_emb): # token is discrete, so we need to embed it
             feats = self.token_emb(feats)
 
-        if exists(self.edge_emb):
+        if exists(self.edge_emb): # edge is discrete, so we need to embed it
             assert exists(edges), 'edges must be passed in as (batch x seq x seq) indicating edge type'
             edges = self.edge_emb(edges)
 
